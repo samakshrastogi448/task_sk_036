@@ -1,0 +1,43 @@
+name: Production QA
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source build / pre-deploy gate
+        run: npm install && npm run build
+      - name: Probe canonical production URL
+        id: probe
+        continue-on-error: true
+        run: curl -L --fail --silent --show-error --max-time 20 https://tasksk036.vercel.app -o /dev/null
+      - name: Check exact-commit Vercel status
+        id: vercel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DATA=$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/status)
+          echo "$DATA" > status.json
+          if echo "$DATA" | jq -e '.statuses[] | select((.context|ascii_downcase|contains("vercel")) and (.state=="success"))' >/dev/null; then echo "ready=true" >> "$GITHUB_OUTPUT"; else echo "ready=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Waiting for Vercel Git integration
+        if: steps.vercel.outputs.ready != 'true'
+        run: echo 'Exact-current-main Vercel SUCCESS not present; production approval blocked.'
+      - name: Install Playwright
+        if: steps.vercel.outputs.ready == 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Real four-viewport Production QA
+        if: steps.vercel.outputs.ready == 'true'
+        env:
+          PRODUCTION_URL: https://tasksk036.vercel.app
+        run: node qa/production-qa.mjs | tee qa-summary.json
+      - name: Upload QA evidence
+        if: steps.vercel.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-qa-evidence
+          path: |
+            qa-*.png
+            qa-summary.json
